@@ -1,0 +1,148 @@
+"""
+Healthcare Claims Denial Prediction Pipeline
+Author: Neelam Harsha
+Description:
+End-to-end pipeline for preprocessing healthcare claims data,
+engineering features, training a denial prediction model,
+and evaluating performance.
+"""
+
+import pandas as pd
+import numpy as np
+import logging
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import classification_report, roc_auc_score
+
+# -------------------------------
+# Logging Configuration
+# -------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
+# -------------------------------
+# Data Loading
+# -------------------------------
+def load_data(filepath: str) -> pd.DataFrame:
+    logging.info("Loading dataset...")
+    df = pd.read_csv(filepath)
+    logging.info(f"Dataset loaded with shape: {df.shape}")
+    return df
+
+
+# -------------------------------
+# Data Cleaning
+# -------------------------------
+def clean_data(df: pd.DataFrame) -> pd.DataFrame:
+    logging.info("Cleaning claim identifiers and handling missing values...")
+
+    # Standardize Claim IDs (removing whitespace padding)
+    df["claim_id"] = df["claim_id"].astype(str).str.strip()
+
+    # Handle missing numerical values
+    numeric_cols = df.select_dtypes(include=np.number).columns
+    df[numeric_cols] = df[numeric_cols].fillna(df[numeric_cols].median())
+
+    # Handle missing categorical values
+    categorical_cols = df.select_dtypes(include="object").columns
+    df[categorical_cols] = df[categorical_cols].fillna("Unknown")
+
+    return df
+
+
+# -------------------------------
+# Feature Engineering
+# -------------------------------
+def feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
+    logging.info("Creating derived features...")
+
+    # Example derived feature: payment gap
+    df["payment_gap"] = df["billed_amount"] - df["paid_amount"]
+
+    # Binary target variable (1 = Denied, 0 = Paid)
+    df["denial_flag"] = np.where(df["claim_status"] == "Denied", 1, 0)
+
+    return df
+
+
+# -------------------------------
+# Model Training
+# -------------------------------
+def train_model(df: pd.DataFrame):
+
+    X = df.drop(columns=["denial_flag", "claim_status", "claim_id"])
+    y = df["denial_flag"]
+
+    categorical_features = X.select_dtypes(include="object").columns.tolist()
+    numerical_features = X.select_dtypes(include=np.number).columns.tolist()
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("num", StandardScaler(), numerical_features),
+            ("cat", OneHotEncoder(handle_unknown="ignore"), categorical_features)
+        ]
+    )
+
+    model = RandomForestClassifier(random_state=42)
+
+    pipeline = Pipeline(
+        steps=[
+            ("preprocessor", preprocessor),
+            ("classifier", model)
+        ]
+    )
+
+    param_grid = {
+        "classifier__n_estimators": [100, 200],
+        "classifier__max_depth": [None, 10, 20]
+    }
+
+    grid_search = GridSearchCV(
+        pipeline,
+        param_grid,
+        cv=5,
+        scoring="f1",
+        n_jobs=-1
+    )
+
+    logging.info("Splitting dataset...")
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+
+    logging.info("Training model with cross-validation...")
+    grid_search.fit(X_train, y_train)
+
+    best_model = grid_search.best_estimator_
+
+    logging.info("Evaluating model...")
+    y_pred = best_model.predict(X_test)
+    y_prob = best_model.predict_proba(X_test)[:, 1]
+
+    print("\nClassification Report:\n")
+    print(classification_report(y_test, y_pred))
+
+    auc_score = roc_auc_score(y_test, y_prob)
+    print(f"ROC-AUC Score: {auc_score:.4f}")
+
+    return best_model
+
+
+# -------------------------------
+# Main Execution
+# -------------------------------
+if __name__ == "__main__":
+
+    filepath = "claims_data.csv"  # Replace with your dataset path
+    df = load_data(filepath)
+    df = clean_data(df)
+    df = feature_engineering(df)
+
+    trained_model = train_model(df)
+
+    logging.info("Pipeline execution completed successfully.")
